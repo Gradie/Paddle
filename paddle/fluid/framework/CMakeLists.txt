@@ -346,10 +346,12 @@ message(STATUS "branch: ${PADDLE_BRANCH}")
 
 configure_file(commit.h.in commit.h)
 
-cc_library(custom_tensor SRCS ../extension/src/tensor.cc DEPS lod_tensor memory enforce)
-cc_library(op_meta_info SRCS ../extension/src/op_meta_info.cc DEPS custom_tensor)
+cc_library(custom_tensor SRCS ../extension/src/ext_tensor.cc DEPS lod_tensor memory enforce)
+cc_library(op_meta_info SRCS ../extension/src/ext_op_meta_info.cc DEPS custom_tensor)
 cc_library(custom_operator SRCS custom_operator.cc DEPS tensor attribute framework_proto op_registry operator dynamic_loader string_helper custom_tensor op_meta_info)
 cc_test(custom_tensor_test SRCS custom_tensor_test.cc DEPS custom_tensor glog)
+
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../extension/include)
 
 set(FLUID_FRAMEWORK_MODULES proto_desc memory lod_tensor executor data_feed_proto layer dynamic_loader custom_operator)
 
@@ -372,11 +374,16 @@ if (LINUX)
 endif()
 
 if (WIN32)
+  if("${CMAKE_GENERATOR}" STREQUAL "Ninja")
+    set(paddle_framework_lib_path ${CMAKE_CURRENT_BINARY_DIR})
+  else()
+    set(paddle_framework_lib_path ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_BUILD_TYPE})
+  endif()
   set(FLUID_FRAMEWORK_IMPORT_LIB
-    ${PADDLE_BINARY_DIR}/paddle/fluid/framework/${CMAKE_BUILD_TYPE}/paddle_framework.lib
-    CACHE INTERNAL "Fluid framework lib")
+      ${paddle_framework_lib_path}/paddle_framework.lib
+      CACHE INTERNAL "Fluid framework lib")
   set(FLUID_FRAMEWORK_SHARED_LIB
-      ${PADDLE_BINARY_DIR}/paddle/fluid/framework/${CMAKE_BUILD_TYPE}/paddle_framework.dll
+      ${paddle_framework_lib_path}/paddle_framework.dll
       CACHE INTERNAL "Fluid framework dll")
 endif()
 
@@ -394,10 +401,16 @@ endif()
 # if not deps `layer`, will cause: undefined symbol: _ZN6paddle10imperative7VarBase9name_set_
 set(PADDLE_CUSTOM_OP_MODULES custom_tensor op_meta_info custom_operator layer)
 
+set(PADDLE_CUSTOM_OP_SRCS
+    ${CMAKE_CURRENT_SOURCE_DIR}/custom_operator.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/../extension/src/ext_tensor.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/../extension/src/ext_op_meta_info.cc
+    ${CMAKE_SOURCE_DIR}/paddle/fluid/imperative/layer.cc)
+set(PADDLE_CUSTOM_OP_SRCS ${PADDLE_CUSTOM_OP_SRCS} PARENT_SCOPE)
+
 cc_library(paddle_custom_op_shared
-    SHARED SRCS custom_operator.cc ../extension/src/tensor.cc ../extension/src/op_meta_info.cc
-    ${CMAKE_SOURCE_DIR}/paddle/fluid/imperative/layer.cc
-    DEPS ${PADDLE_CUSTOM_OP_MODULES})
+    SHARED SRCS ${PADDLE_CUSTOM_OP_SRCS} DEPS ${PADDLE_CUSTOM_OP_MODULES})
+
 get_property(os_dependency_modules GLOBAL PROPERTY OS_DEPENDENCY_MODULES)
 set_target_properties(paddle_custom_op_shared PROPERTIES OUTPUT_NAME paddle_custom_op)
 target_link_libraries(paddle_custom_op_shared ${os_dependency_modules})
@@ -409,11 +422,16 @@ if (LINUX)
 endif()
 
 if (WIN32)
+  if("${CMAKE_GENERATOR}" STREQUAL "Ninja")
+    set(paddle_custom_op_lib_path ${CMAKE_CURRENT_BINARY_DIR})
+  else()
+    set(paddle_custom_op_lib_path ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_BUILD_TYPE})
+  endif()
   set(PADDLE_CUSTOM_OP_IMPORT_LIB
-      ${PADDLE_BINARY_DIR}/paddle/fluid/framework/${CMAKE_BUILD_TYPE}/paddle_custom_op.lib
+      ${paddle_custom_op_lib_path}/paddle_custom_op.lib
       CACHE INTERNAL "Paddle custom op import lib")
   set(PADDLE_CUSTOM_OP_SHARED_LIB
-      ${PADDLE_BINARY_DIR}/paddle/fluid/framework/${CMAKE_BUILD_TYPE}/paddle_custom_op.dll
+      ${paddle_custom_op_lib_path}/paddle_custom_op.dll
       CACHE INTERNAL "Paddle custom op dll")
 endif()
 

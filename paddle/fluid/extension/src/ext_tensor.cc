@@ -12,7 +12,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License. */
 
-#include "paddle/fluid/extension/include/tensor.h"
+#include "paddle/fluid/extension/include/ext_tensor.h"
 #include <utility>
 #include "paddle/fluid/framework/custom_tensor_utils.h"
 #include "paddle/fluid/framework/lod_tensor.h"
@@ -95,14 +95,15 @@ void GpuCopy(T *src, T *dst, PlaceType src_plc, PlaceType dst_plc,
   }                                                     \
   auto *tensor = static_cast<framework::LoDTensor *>(tensor_.get());
 
-void Tensor::reshape(const std::vector<int> &shape) {
+void Tensor::reshape(const std::vector<int64_t> &shape) {
   GET_CASTED_TENSOR
   tensor->Resize(framework::make_ddim(shape));
 }
 
 Tensor::Tensor(const PlaceType &place)
-    : tensor_(std::make_shared<framework::LoDTensor>()), place_(place) {}
-
+    : tensor_(std::make_shared<framework::LoDTensor>()),
+      place_(place),
+      stream_(StreamWrapper()) {}
 template <typename T>
 T *Tensor::mutable_data(const PlaceType &place) {
   place_ = place;
@@ -250,9 +251,9 @@ template PD_DLL_DECL int16_t *Tensor::mutable_data<int16_t>(
     const PlaceType &place);
 template PD_DLL_DECL bool *Tensor::mutable_data<bool>(const PlaceType &place);
 
-std::vector<int> Tensor::shape() const {
+std::vector<int64_t> Tensor::shape() const {
   GET_CASTED_TENSOR
-  return framework::vectorize<int>(tensor->dims());
+  return framework::vectorize<int64_t>(tensor->dims());
 }
 
 const PlaceType &Tensor::place() const {
@@ -322,6 +323,18 @@ int64_t Tensor::size() const {
   GET_CASTED_TENSOR;
   return tensor->numel();
 }
+
+#ifdef PADDLE_WITH_CUDA
+cudaStream_t Tensor::stream() const {
+  if (!stream_.IsStreamSet()) {
+    PADDLE_THROW(platform::errors::PreconditionNotMet(
+        "Stream is not Set, only input tensor will have "
+        "stream which is set by framework "));
+  } else {
+    return reinterpret_cast<cudaStream_t>(stream_.GetStream());
+  }
+}
+#endif
 
 namespace framework {
 

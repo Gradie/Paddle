@@ -51,6 +51,7 @@ MSVC_LINK_FLAGS = ['/MACHINE:X64', 'paddle_custom_op.lib']
 COMMON_NVCC_FLAGS = ['-DPADDLE_WITH_CUDA', '-DEIGEN_USE_GPU', '-O3']
 
 GCC_MINI_VERSION = (5, 4, 0)
+MSVC_MINI_VERSION = (19, 0, 24215)
 # Give warning if using wrong compiler
 WRONG_COMPILER_WARNING = '''
                         *************************************
@@ -64,7 +65,7 @@ built Paddle for this platform, which is {paddle_compiler} on {platform}. Please
 use {paddle_compiler} to compile your custom op. Or you may compile Paddle from
 source using {user_compiler}, and then also use it compile your custom op.
 
-See https://www.paddlepaddle.org.cn/install/quick?docurl=/documentation/docs/zh/2.0/install/compile/linux-compile.html
+See https://www.paddlepaddle.org.cn/documentation/docs/zh/install/compile/fromsource.html
 for help with compiling Paddle from source.
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -463,6 +464,39 @@ def find_cuda_home():
     return cuda_home
 
 
+def find_rocm_home():
+    """
+    Use heuristic method to find rocm path
+    """
+    # step 1. find in $ROCM_HOME or $ROCM_PATH
+    rocm_home = os.environ.get('ROCM_HOME') or os.environ.get('ROCM_PATH')
+
+    # step 2.  find path by `which nvcc`
+    if rocm_home is None:
+        which_cmd = 'where' if IS_WINDOWS else 'which'
+        try:
+            with open(os.devnull, 'w') as devnull:
+                hipcc_path = subprocess.check_output(
+                    [which_cmd, 'hipcc'], stderr=devnull)
+                if six.PY3:
+                    hipcc_path = hipcc_path.decode()
+                hipcc_path = hipcc_path.rstrip('\r\n')
+
+                # for example: /opt/rocm/bin/hipcc
+                rocm_home = os.path.dirname(os.path.dirname(hipcc_path))
+        except:
+            rocm_home = "/opt/rocm"
+    # step 3. check whether path is valid
+    if rocm_home and not os.path.exists(
+            rocm_home) and core.is_compiled_with_rocm():
+        rocm_home = None
+        warnings.warn(
+            "Not found ROCM runtime, please use `export ROCM_PATH= XXX` to specific it."
+        )
+
+    return rocm_home
+
+
 def find_cuda_includes():
     """
     Use heuristic method to find cuda include path
@@ -476,6 +510,19 @@ def find_cuda_includes():
     return [os.path.join(cuda_home, 'include')]
 
 
+def find_rocm_includes():
+    """
+    Use heuristic method to find rocm include path
+    """
+    rocm_home = find_rocm_home()
+    if rocm_home is None:
+        raise ValueError(
+            "Not found ROCM runtime, please use `export ROCM_PATH= XXX` to specific it."
+        )
+
+    return [os.path.join(rocm_home, 'include')]
+
+
 def find_paddle_includes(use_cuda=False):
     """
     Return Paddle necessary include dir path.
@@ -486,8 +533,12 @@ def find_paddle_includes(use_cuda=False):
     include_dirs = [paddle_include_dir, third_party_dir]
 
     if use_cuda:
-        cuda_include_dir = find_cuda_includes()
-        include_dirs.extend(cuda_include_dir)
+        if core.is_compiled_with_rocm():
+            rocm_include_dir = find_rocm_includes()
+            include_dirs.extend(rocm_include_dir)
+        else:
+            cuda_include_dir = find_cuda_includes()
+            include_dirs.extend(cuda_include_dir)
 
     return include_dirs
 
@@ -509,6 +560,20 @@ def find_cuda_libraries():
     return cuda_lib_dir
 
 
+def find_rocm_libraries():
+    """
+    Use heuristic method to find rocm dynamic lib path
+    """
+    rocm_home = find_rocm_home()
+    if rocm_home is None:
+        raise ValueError(
+            "Not found ROCM runtime, please use `export ROCM_PATH=XXX` to specific it."
+        )
+    rocm_lib_dir = [os.path.join(rocm_home, 'lib')]
+
+    return rocm_lib_dir
+
+
 def find_paddle_libraries(use_cuda=False):
     """
     Return Paddle necessary library dir path.
@@ -517,8 +582,12 @@ def find_paddle_libraries(use_cuda=False):
     paddle_lib_dirs = [get_lib()]
 
     if use_cuda:
-        cuda_lib_dir = find_cuda_libraries()
-        paddle_lib_dirs.extend(cuda_lib_dir)
+        if core.is_compiled_with_rocm():
+            rocm_lib_dir = find_rocm_libraries()
+            paddle_lib_dirs.extend(rocm_lib_dir)
+        else:
+            cuda_lib_dir = find_cuda_libraries()
+            paddle_lib_dirs.extend(cuda_lib_dir)
 
     return paddle_lib_dirs
 
@@ -877,13 +946,12 @@ def check_abi_compatibility(compiler, verbose=False):
     Check whether GCC version on user local machine is compatible with Paddle in
     site-packages.
     """
-    # TODO(Aurelius84): After we support windows, remove IS_WINDOWS in following code.
-    if os.environ.get('PADDLE_SKIP_CHECK_ABI') in ['True', 'true', '1'
-                                                   ] or IS_WINDOWS:
+    if os.environ.get('PADDLE_SKIP_CHECK_ABI') in ['True', 'true', '1']:
         return True
 
+    which = 'where' if IS_WINDOWS else 'which'
     cmd_out = subprocess.check_output(
-        ['which', compiler], stderr=subprocess.STDOUT)
+        [which, compiler], stderr=subprocess.STDOUT)
     compiler_path = os.path.realpath(cmd_out.decode()
                                      if six.PY3 else cmd_out).strip()
     # step 1. if not found any suitable compiler, raise error
@@ -896,32 +964,41 @@ def check_abi_compatibility(compiler, verbose=False):
                 platform=OS_NAME))
         return False
 
+    version = (0, 0, 0)
     # clang++ have no ABI compatibility problem
     if OS_NAME.startswith('darwin'):
         return True
     try:
         if OS_NAME.startswith('linux'):
+            mini_required_version = GCC_MINI_VERSION
             version_info = subprocess.check_output(
                 [compiler, '-dumpfullversion', '-dumpversion'])
             if six.PY3:
                 version_info = version_info.decode()
             version = version_info.strip().split('.')
-            assert len(version) == 3
-            # check version compatibility
-            if tuple(map(int, version)) >= GCC_MINI_VERSION:
-                return True
-            else:
-                warnings.warn(
-                    ABI_INCOMPATIBILITY_WARNING.format(
-                        user_compiler=compiler, version=version_info.strip()))
         elif IS_WINDOWS:
-            # TODO(zhouwei): support check abi compatibility on windows
-            warnings.warn("We don't support Windows now.")
+            mini_required_version = MSVC_MINI_VERSION
+            compiler_info = subprocess.check_output(
+                compiler, stderr=subprocess.STDOUT)
+            if six.PY3:
+                compiler_info = compiler_info.decode()
+            match = re.search(r'(\d+)\.(\d+)\.(\d+)', compiler_info.strip())
+            if match is not None:
+                version = match.groups()
     except Exception:
+        # check compiler version failed
         _, error, _ = sys.exc_info()
         warnings.warn('Failed to check compiler version for {}: {}'.format(
             compiler, error))
+        return False
 
+    # check version compatibility
+    assert len(version) == 3
+    if tuple(map(int, version)) >= mini_required_version:
+        return True
+    warnings.warn(
+        ABI_INCOMPATIBILITY_WARNING.format(
+            user_compiler=compiler, version='.'.join(version)))
     return False
 
 
@@ -929,8 +1006,12 @@ def _expected_compiler_current_platform():
     """
     Returns supported compiler string on current platform
     """
-    expect_compilers = ['clang', 'clang++'] if OS_NAME.startswith(
-        'darwin') else ['gcc', 'g++', 'gnu-c++', 'gnu-cc']
+    if OS_NAME.startswith('darwin'):
+        expect_compilers = ['clang', 'clang++']
+    elif OS_NAME.startswith('linux'):
+        expect_compilers = ['gcc', 'g++', 'gnu-c++', 'gnu-cc']
+    elif IS_WINDOWS:
+        expect_compilers = ['cl']
     return expect_compilers
 
 
